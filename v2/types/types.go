@@ -16,7 +16,9 @@ limitations under the License.
 
 package types
 
-import "strings"
+import (
+	"strings"
+)
 
 // Ref makes a reference to the given type. It can only be used for e.g.
 // passing to namers.
@@ -123,6 +125,9 @@ type Package struct {
 	// All comments from doc.go, if any.
 	// TODO: remove Comments and use DocComments everywhere.
 	Comments []string
+
+	// The directives right above the package declaration in doc.go, if any.
+	DocDirectives []string
 
 	// Types within this package, indexed by their name (*not* including
 	// package name).
@@ -321,6 +326,10 @@ type Type struct {
 	// ---
 	SecondClosestCommentLines []string
 
+	// If there are directives immediately before the type definition, they will
+	// be recorded here.
+	Directives []string
+
 	// If Kind == Struct
 	Members []Member
 
@@ -411,6 +420,10 @@ type Member struct {
 	// definition, they will be recorded here.
 	CommentLines []string
 
+	// If there are directives immediately before the member in the type
+	// definition, they will be recorded here.
+	Directives []string
+
 	// If there are tags along with this member, they will be saved here.
 	Tags string
 
@@ -427,8 +440,17 @@ func (m Member) String() string {
 type ParamResult struct {
 	// The name of the parameter or result.
 	Name string
+
 	// The type of this parameter or result.
 	Type *Type
+
+	// If there are comment lines immediately before the parameter or result
+	// declaration they will be recorded here.
+	CommentLines []string
+
+	// If there are directives immediately before the parameter or result
+	// declaration they will be recorded here.
+	Directives []string
 }
 
 // Signature is a function's signature.
@@ -440,10 +462,6 @@ type Signature struct {
 
 	// True if the last in parameter is of the form ...T.
 	Variadic bool
-
-	// If there are comment lines immediately before this
-	// signature/method/function declaration, they will be recorded here.
-	CommentLines []string
 }
 
 // Built in types.

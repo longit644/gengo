@@ -537,6 +537,9 @@ func TestAddOnePkgToUniverse(t *testing.T) {
 		if len(ud.Comments) != 6 { // Fixed value from the testdata
 			t.Errorf("expected 3 comments, 2 lines each, got: %v", pretty(ud.Comments))
 		}
+		if len(ud.DocDirectives) != 2 { // Fixed value from the testdata
+			t.Errorf("expected 2 directives lines, got: %v", pretty(ud.DocDirectives))
+		}
 
 		// verify types
 		if len(ui.Types) != 0 {

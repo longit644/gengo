@@ -388,6 +388,12 @@ func (p *Parser) addCommentsToType(obj gotypes.Object, t *types.Type) {
 	t.SecondClosestCommentLines = p.priorDetachedComment(obj.Pos())
 }
 
+// addDirectivesToType takes any directives prior to obj and attaches them to
+// the type t.
+func (p *Parser) addDirectivesToType(obj gotypes.Object, t *types.Type) {
+	t.Directives = p.directive(obj.Pos())
+}
+
 // packageDir tries to figure out the directory of the specified package.
 func packageDir(pkg *packages.Package) (string, error) {
 	// Sometimes Module is present but has no Dir, e.g. when it is vendored.
@@ -478,6 +484,7 @@ func (p *Parser) addPkgToUniverse(pkg *packages.Package, u *types.Universe) erro
 			if f.Doc != nil {
 				gengoPkg.DocComments = splitLines(f.Doc.Text())
 			}
+			gengoPkg.DocDirectives = extractDirectives(f.Doc)
 		}
 	}
 
@@ -488,20 +495,24 @@ func (p *Parser) addPkgToUniverse(pkg *packages.Package, u *types.Universe) erro
 		case *gotypes.TypeName:
 			t := p.walkType(*u, nil, obj.Type())
 			p.addCommentsToType(obj, t)
+			p.addDirectivesToType(obj, t)
 		case *gotypes.Func:
 			// We only care about functions, not concrete/abstract methods.
 			if obj.Type() != nil && obj.Type().(*gotypes.Signature).Recv() == nil {
 				t := p.addFunction(*u, nil, obj)
 				p.addCommentsToType(obj, t)
+				p.addDirectivesToType(obj, t)
 			}
 		case *gotypes.Var:
 			if !obj.IsField() {
 				t := p.addVariable(*u, nil, obj)
 				p.addCommentsToType(obj, t)
+				p.addDirectivesToType(obj, t)
 			}
 		case *gotypes.Const:
 			t := p.addConstant(*u, nil, obj)
 			p.addCommentsToType(obj, t)
+			p.addDirectivesToType(obj, t)
 		default:
 			klog.Infof("addPkgToUniverse %q: unhandled object of type %T: %v", pkgPath, obj, obj)
 		}
@@ -527,6 +538,12 @@ func (p *Parser) docComment(pos token.Pos) []string {
 	// declaration.
 	c1 := p.priorCommentLines(pos, 1)
 	return splitLines(c1.Text()) // safe even if c1 is nil
+}
+
+// If the specified position has directives, return that.
+func (p *Parser) directive(pos token.Pos) []string {
+	cg := p.priorCommentLines(pos, 1)
+	return extractDirectives(cg)
 }
 
 // If there is a detached (not immediately before a declaration) comment,
@@ -602,16 +619,26 @@ func goNameToName(in string) types.Name {
 func (p *Parser) convertSignature(u types.Universe, t *gotypes.Signature) *types.Signature {
 	signature := &types.Signature{}
 	for i := 0; i < t.Params().Len(); i++ {
-		signature.Parameters = append(signature.Parameters, &types.ParamResult{
-			Name: t.Params().At(i).Name(),
-			Type: p.walkType(u, nil, t.Params().At(i).Type()),
-		})
+		signature.Parameters = append(
+			signature.Parameters,
+			&types.ParamResult{
+				Name:         t.Params().At(i).Name(),
+				Type:         p.walkType(u, nil, t.Params().At(i).Type()),
+				CommentLines: p.docComment(t.Params().At(i).Pos()),
+				Directives:   p.directive(t.Params().At(i).Pos()),
+			},
+		)
 	}
 	for i := 0; i < t.Results().Len(); i++ {
-		signature.Results = append(signature.Results, &types.ParamResult{
-			Name: t.Results().At(i).Name(),
-			Type: p.walkType(u, nil, t.Results().At(i).Type()),
-		})
+		signature.Results = append(
+			signature.Results,
+			&types.ParamResult{
+				Name:         t.Results().At(i).Name(),
+				Type:         p.walkType(u, nil, t.Results().At(i).Type()),
+				CommentLines: p.docComment(t.Results().At(i).Pos()),
+				Directives:   p.directive(t.Results().At(i).Pos()),
+			},
+		)
 	}
 	if r := t.Recv(); r != nil {
 		signature.Receiver = p.walkType(u, nil, r.Type())
@@ -643,6 +670,7 @@ func (p *Parser) walkType(u types.Universe, useName *types.Name, in gotypes.Type
 				Tags:         t.Tag(i),
 				Type:         p.walkType(u, nil, f.Type()),
 				CommentLines: p.docComment(f.Pos()),
+				Directives:   p.directive(f.Pos()),
 			}
 			out.Members = append(out.Members, m)
 		}
@@ -724,6 +752,7 @@ func (p *Parser) walkType(u types.Universe, useName *types.Name, in gotypes.Type
 			name := goNameToName(method.String())
 			mt := p.walkType(u, &name, method.Type())
 			mt.CommentLines = p.docComment(method.Pos())
+			mt.Directives = p.directive(method.Pos())
 			out.Methods[method.Name()] = mt
 		}
 		return out
@@ -760,6 +789,7 @@ func (p *Parser) walkType(u types.Universe, useName *types.Name, in gotypes.Type
 				name := goNameToName(method.String())
 				mt := p.walkType(u, &name, method.Type())
 				mt.CommentLines = p.docComment(method.Pos())
+				mt.Directives = p.directive(method.Pos())
 				out.Methods[method.Name()] = mt
 			}
 		}
@@ -822,4 +852,55 @@ func (p *Parser) addConstant(u types.Universe, useName *types.Name, in *gotypes.
 
 	out.ConstValue = &constval
 	return out
+}
+
+// extractDirectives extracts directives from a CommentGroup.
+func extractDirectives(cg *ast.CommentGroup) []string {
+	if cg == nil {
+		return nil
+	}
+
+	var directives []string
+	for _, c := range cg.List {
+		text := c.Text
+		if len(text) == 0 {
+			continue
+		}
+
+		if text[1] == '/' && isDirective(text[2:]) {
+			directives = append(directives, text[2:])
+		}
+	}
+
+	return directives
+}
+
+// isDirective reports whether c is a comment directive.
+//
+// Copied and adapted from go/src/go/ast/ast.go.
+func isDirective(c string) bool {
+	// "//line " is a line directive.
+	// "//extern " is for gccgo.
+	// "//export " is for cgo.
+	// (The // has been removed.)
+	if strings.HasPrefix(c, "line ") || strings.HasPrefix(c, "extern ") || strings.HasPrefix(c, "export ") {
+		return true
+	}
+
+	// "//[a-z0-9]+:[a-z0-9]"
+	// (The // has been removed.)
+	colon := strings.Index(c, ":")
+	if colon <= 0 || colon+1 >= len(c) {
+		return false
+	}
+	for i := 0; i <= colon+1; i++ {
+		if i == colon {
+			continue
+		}
+		b := c[i]
+		if !('a' <= b && b <= 'z' || '0' <= b && b <= '9') {
+			return false
+		}
+	}
+	return true
 }
